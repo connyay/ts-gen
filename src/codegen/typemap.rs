@@ -818,17 +818,17 @@ pub fn to_syn_type(
             }
             if let Some(c) = ctx {
                 c.warn(format!(
-                    "union with no common supertype erased to JsValue ({} variants)",
-                    members.len()
+                    "union `{}` has no common supertype, erased to JsValue",
+                    ty.format_ts(),
                 ));
             }
             maybe_ref(quote! { JsValue }, borrow)
         }
-        TypeRef::Intersection(parts) => {
+        TypeRef::Intersection(_) => {
             if let Some(c) = ctx {
                 c.warn(format!(
-                    "intersection of {} types erased to JsValue (no structural merge yet)",
-                    parts.len()
+                    "intersection `{}` has no structural merge yet, erased to JsValue",
+                    ty.format_ts(),
                 ));
             }
             maybe_ref(quote! { JsValue }, borrow)
@@ -887,8 +887,12 @@ pub fn to_syn_type(
         // `to_syn_type`, bypassing the outer `maybe_ref` wrap so the
         // already-borrowed slice / `Vec<T>` shape isn't double-borrowed:
         //
-        // * `Array<T>` / `ReadonlyArray<T>` — re-routed through the
-        //   syntactic `T[]` arm.
+        // * `Array<T>` / `ReadonlyArray<T>` — lower to the JS-array
+        //   reference form (`&Array<U>` / `Array<U>`), distinct from
+        //   the syntactic `T[]` which keeps the Rust-slice form.
+        //   TS spelling drives the choice: callers who want a JS
+        //   array reference (no element-wise materialisation) write
+        //   `Array<T>`; callers who want a Rust slice write `T[]`.
         // * Bare references that resolve to a type alias whose target
         //   carries its own borrow shape (e.g. `string`, `T[]`,
         //   `Array<U>`) — recursing into the target re-runs
@@ -900,13 +904,9 @@ pub fn to_syn_type(
         } => {
             if segments.len() == 1 && (segments[0] == "Array" || segments[0] == "ReadonlyArray") {
                 let inner = generic_args.first().cloned().unwrap_or(TypeRef::Any);
-                return to_syn_type(
-                    &TypeRef::Array(Box::new(inner)),
-                    pos,
-                    ctx,
-                    scope,
-                    from_module,
-                );
+                let base =
+                    generic_container(quote! { Array }, &inner, pos, ctx, scope, from_module);
+                return maybe_ref(base, borrow);
             }
             if segments.len() == 1 && generic_args.is_empty() {
                 if let Some(c) = ctx {

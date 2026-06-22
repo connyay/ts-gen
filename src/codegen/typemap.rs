@@ -211,6 +211,29 @@ pub struct DynamicUnionRegistry {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DynamicUnionKey(pub Vec<String>);
 
+/// Which kind of "value enum" a reference resolves to. Both lower to `Copy`
+/// wasm-bindgen enums that pass by value and don't implement `JsCast`; the
+/// variant records the js_sys wrapper (`JsString` / `Number`) that carries the
+/// same FFI value when the enum appears as a union-enum payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueEnumKind {
+    /// A string enum. Its FFI value is a JS string (`JsString`).
+    String,
+    /// A numeric enum. Its FFI value is a JS number (`Number`).
+    Numeric,
+}
+
+impl ValueEnumKind {
+    /// The `js_sys` wrapper that carries this enum's FFI value, used as its
+    /// payload when the enum appears in a union enum. See [`ValueEnumKind`].
+    pub fn js_wrapper(self) -> &'static str {
+        match self {
+            ValueEnumKind::String => "JsString",
+            ValueEnumKind::Numeric => "Number",
+        }
+    }
+}
+
 /// Bookkeeping for a single synthesised dynamic-union enum.
 #[derive(Debug, Clone)]
 pub struct DynamicUnionInfo {
@@ -578,6 +601,29 @@ impl<'a> CodegenContext<'a> {
             }
         }
         None
+    }
+
+    /// Returns the kind of value enum `name` resolves to (chasing single-segment
+    /// alias chains), or `None` for non-enum types. wasm-bindgen lowers string
+    /// and numeric enums to `Copy` enums whose `IntoWasmAbi` is by value, so they
+    /// must be passed by value (never `&T`) in argument position. See
+    /// [`ValueEnumKind`] for the union-payload case.
+    pub fn value_enum_kind(&self, name: &str, scope: ScopeId) -> Option<ValueEnumKind> {
+        // Chase any single-segment alias chain to its terminal name, reusing
+        // `resolve_alias`'s cycle-safe walk; a direct (non-alias) name is used
+        // as-is. Aliases whose target is a qualified path or generic instantiation
+        // aren't idents, so we don't follow them. That matches the single-segment
+        // limit at the reference-lowering call site.
+        let terminal = self
+            .resolve_alias(name, scope)
+            .and_then(|target| target.as_ident())
+            .unwrap_or(name);
+        let type_id = self.gctx.scopes.resolve(scope, terminal)?;
+        match self.gctx.get_type(type_id).kind {
+            TypeKind::StringEnum(_) => Some(ValueEnumKind::String),
+            TypeKind::NumericEnum(_) => Some(ValueEnumKind::Numeric),
+            _ => None,
+        }
     }
 
     /// Emit an error diagnostic during code generation.
@@ -993,9 +1039,13 @@ pub fn to_syn_type(
                     }
                 }
             }
+            // A reference to a value enum must be passed by value, not `&T`
+            // (see `value_enum_kind` for why).
+            let is_value_enum = segments.len() == 1
+                && ctx.is_some_and(|c| c.value_enum_kind(&segments[0], scope).is_some());
             maybe_ref(
                 lower_reference(segments, generic_args, pos, ctx, scope, from_module),
-                borrow,
+                borrow && !is_value_enum,
             )
         }
 

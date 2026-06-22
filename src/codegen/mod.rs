@@ -322,6 +322,19 @@ fn generate_dynamic_unions(cgctx: &CodegenContext) -> TokenStream {
                 .members
                 .iter()
                 .map(|m| {
+                    // A string/numeric enum member can't be a union payload
+                    // directly: value enums don't implement `JsCast`. Substitute
+                    // the js_sys wrapper that carries the same FFI value
+                    // (`JsString` for string enums, `Number` for numeric ones).
+                    if let Some(kind) = m
+                        .as_ident()
+                        .and_then(|name| cgctx.value_enum_kind(name, cgctx.root_scope))
+                    {
+                        let wrapper = kind.js_wrapper();
+                        let payload = typemap::make_ident(wrapper);
+                        let variant_ident = typemap::make_ident(&alloc_variant(wrapper));
+                        return quote! { #variant_ident(#payload) };
+                    }
                     match m {
                         // String / number / boolean literal members
                         // become string-discriminant / numeric-discriminant

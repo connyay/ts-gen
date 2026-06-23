@@ -243,6 +243,13 @@ pub struct DynamicUnionInfo {
     /// emit pass can render variants without re-running the
     /// member-set computation.
     pub members: Vec<TypeRef>,
+    /// Scope the members were resolved in. The emit pass needs it to
+    /// classify member references (e.g. `value_enum_kind`): a
+    /// module-scoped string enum isn't reachable from `root_scope`, so
+    /// resolving from the wrong scope would silently miss the
+    /// `JsString`/`Number` lowering and emit a payload that doesn't
+    /// implement `JsCast`.
+    pub scope: ScopeId,
 }
 
 impl DynamicUnionRegistry {
@@ -510,6 +517,7 @@ impl<'a> CodegenContext<'a> {
         members: &[TypeRef],
         anchor: &str,
         parent: Option<&str>,
+        scope: ScopeId,
     ) -> String {
         let key = DynamicUnionKey(members.iter().map(format_type_ref_key).collect());
         if let Some(info) = self.dynamic_unions.borrow().by_key.get(&key) {
@@ -523,6 +531,7 @@ impl<'a> CodegenContext<'a> {
             DynamicUnionInfo {
                 rust_name: chosen.clone(),
                 members: members.to_vec(),
+                scope,
             },
         );
         chosen
@@ -1631,7 +1640,7 @@ fn maybe_synthesise_return_union(
         return None;
     }
 
-    let name = cgctx.synthesise_dynamic_union(members, &anchor.enum_anchor(), anchor.parent);
+    let name = cgctx.synthesise_dynamic_union(members, &anchor.enum_anchor(), anchor.parent, scope);
     let ident = make_ident(&name);
     Some(quote! { #ident })
 }
